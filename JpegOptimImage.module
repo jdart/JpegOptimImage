@@ -1,0 +1,176 @@
+<?php
+
+/**
+ * JpegOptimImage: Optimize resized jpegs.
+ * 
+ * By Jonathan Dart
+ * http://metricmarketing.ca/blog/author/jonathan-dart
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+class JpegOptimImage extends WireData implements Module, ConfigurableModule
+{
+	static $defaults = array(
+		'quality' => 75,
+		'threshold' => 40,
+		'progressive' => true,
+		'strip' => true,
+		'binary' => 'jpegoptim'
+	);
+
+	public static function getModuleInfo() 
+	{
+		return array(
+			'title' => 'JpegOptimImage', 
+			'version' => 10, 
+			'summary' => 'JpegOptimImage: Optimize resized jpegs.',
+			'href' => 'https://github.com/jdart/JpegOptimImage',
+			'singular' => true, 
+			'autoload' => true,
+		);
+	}
+
+	public function init()
+	{
+		$this->addHookAfter('ImageSizer::resize', $this, 'imageSizerResizeAfter');
+		$this->addHook('Pageimage::optimize', $this, 'pageImageOptimize');
+	}
+
+	public function imageSizerResizeAfter($event)
+	{
+		$imageSizer = $event->object;
+
+		if ($imageSizer->getImageType() !== IMAGETYPE_JPEG)
+			return;
+
+		$this->fileOptimize($imageSizer->getFilename());
+	}
+
+	public function fileOptimize($path, $newPath=null)
+	{		
+		if ( ! is_null($newPath)) // Make a copy for jpegoptim to overwrite
+			copy($path, $newPath);
+
+		$cmd = sprintf('%s %s -q -m%d -T%d %s %s', 
+			escapeshellarg($this->valueOrDefault('binary')),
+			$this->valueOrDefault('strip') ? '--strip-all' : '',
+			$this->valueOrDefault('quality'),
+			$this->valueOrDefault('threshold'),
+			$this->valueOrDefault('progressive') ? '--all-progressive' : '',
+			escapeshellarg(is_null($newPath) ? $path : $newPath)
+		);
+
+		`$cmd`;
+	}
+
+	public function pageImageOptimize(HookEvent $event)
+	{
+		$image = $event->object; // Pageimage
+
+		$path = $image->filename;
+
+		if ( !($newPath = $this->optimizedFilename($path)))
+			return;
+
+		if ( ! file_exists($newPath))
+			$this->fileOptimize($path, $newPath);
+
+		$new_image = clone $image;
+		$new_image->setOriginal($image);
+		$new_image->setFilename($newPath);
+
+		$event->return = $new_image;
+	}
+
+	public function optimizedFilename($path)
+	{
+		$pathInfo = pathinfo($path);
+
+		if ( ! in_array(strtolower($pathInfo['extension']), array('jpg', 'jpeg')))
+			return false;
+
+		$newPath = sprintf('%s%s%s.jo.%s', 
+			$pathInfo['dirname'], 
+			DIRECTORY_SEPARATOR, 
+			$pathInfo['filename'], 
+			$pathInfo['extension']
+		);
+
+		return $newPath;
+	}
+
+	public static function getModuleConfigInputfields(array $data)
+	{
+		$fields = new InputfieldWrapper();
+		$modules = Wire::getFuel('modules');
+
+		$field = $modules->get("InputfieldText");
+		$field->name = "quality";
+		$field->label = __("Maximum image quality factor");
+		$field->value = static::valueOrDefault('quality', $data);
+		$field->description = __("Sets  the  maximum  image  quality  factor. This option will reduce quality of those source files that were saved using higher quality setting. While files that already have lower quality setting will be compressed using the lossless optimization method. Valid values for quality parameter are: 0 - 100");
+		$fields->add($field);
+
+		$field = $modules->get("InputfieldText");
+		$field->name = "threshold";
+		$field->label = __("Minimum Compression Threshold");
+		$field->value = static::valueOrDefault('threshold', $data);
+		$field->description = __("Keep the file unchanged if the compression gain is lower than the threshold (%). Valid values for thresholds are: 0 - 100");
+		$fields->add($field);
+
+		$field = $modules->get("InputfieldText");
+		$field->name = "binary";
+		$field->label = __("JpegOptim Binary path");
+		$field->value = static::valueOrDefault('binary', $data);
+		$field->description = __("Path to the jpeg optim location");
+		$fields->add($field);
+
+		$field = $modules->get("InputfieldCheckbox");
+		$field->name = "progressive";
+		$field->label = __("Create progressive images");
+		$field->checked = static::valueOrDefault('progressive', $data);
+		$field->description = __("Force all output files to be progressive.");
+		$fields->add($field);
+
+		$field = $modules->get("InputfieldCheckbox");
+		$field->name = "strip";
+		$field->label = __("Strip all markers from output file");
+		$field->checked = static::valueOrDefault('strip', $data);
+		$field->description = __("Output JPEGs will still likely contain one or two markers (JFIF and Adobe APP14) depending on colorspace used in the image, as these markers are generated by the libjpeg encoder automatically.");
+		$fields->add($field);
+
+		return $fields;
+	}
+
+	public static function valueOrDefault($key, $data=null)
+	{
+		if ( ! isset($data[$key]))
+			return $default;
+
+		return $data[$key];
+	}
+
+	public function valueOrDefault($key)
+	{
+		$value = $this->get($key);
+
+		if (is_null($value)) {
+			if (isset(static::$defaults[$key]))
+				return $defaults[$key];
+			return $value;
+		}
+
+		return $value;
+	}
+}
