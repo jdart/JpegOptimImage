@@ -24,7 +24,7 @@ The [usual methods](http://modules.processwire.com/install-uninstall/) apply.
 
 Resized images are automagically optimized:
 
-`echo $page->image->size(50, 50)->url; // no need to call optimize
+`echo $page->image->size(50, 50)->url; // no need to call optimize`
 
 If you don't need to resize the image you can call optimize like in the below:
 
