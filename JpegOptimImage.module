@@ -56,9 +56,6 @@ class JpegOptimImage extends WireData implements Module, ConfigurableModule
 
 		$this->functionCallOptions = array();
 
-		if (false === $imageSizer->useJPEGOPTIM)
-			return;
-
 		if ($imageSizer->getImageType() !== IMAGETYPE_JPEG)
 			return;
 
