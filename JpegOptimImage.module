@@ -22,12 +22,15 @@
 class JpegOptimImage extends WireData implements Module, ConfigurableModule
 {
 	static $defaults = array(
-		'quality' => 75,
-		'threshold' => 40,
-		'progressive' => true,
-		'strip' => true,
-		'binary' => 'jpegoptim'
+		'joQuality' => 75,
+		'joThreshold' => 40,
+		'joProgressive' => true,
+		'joStrip' => true,
+		'joBinary' => 'jpegoptim'
 	);
+
+	protected
+		$functionCallOptions = array();
 
 	public static function getModuleInfo() 
 	{
@@ -51,6 +54,11 @@ class JpegOptimImage extends WireData implements Module, ConfigurableModule
 	{
 		$imageSizer = $event->object;
 
+		$this->functionCallOptions = array();
+
+		if (false === $imageSizer->useJPEGOPTIM)
+			return;
+
 		if ($imageSizer->getImageType() !== IMAGETYPE_JPEG)
 			return;
 
@@ -62,35 +70,73 @@ class JpegOptimImage extends WireData implements Module, ConfigurableModule
 		if ( ! is_null($newPath)) // Make a copy for jpegoptim to overwrite
 			copy($path, $newPath);
 
-		$cmd = sprintf('%s %s -q -m%d -T%d %s %s', 
-			escapeshellarg($this->valueOrDefault('binary')),
-			$this->valueOrDefault('strip') ? '--strip-all' : '',
-			$this->valueOrDefault('quality'),
-			$this->valueOrDefault('threshold'),
-			$this->valueOrDefault('progressive') ? '--all-progressive' : '',
-			escapeshellarg(is_null($newPath) ? $path : $newPath)
+		$cmd = array(
+			escapeshellarg($this->valueOrDefault('joBinary')),
+			'-q',
 		);
 
-		`$cmd`;
+		if ($this->valueOrDefault('joStrip'))
+			$cmd[] =  '--strip-exif --strip-com --strip-icc';
+
+		if ( ! $this->valueOrDefault('joLossless')) {
+			$cmd[] = sprintf('-m%d', $this->valueOrDefault('joQuality'));
+			$cmd[] = sprintf('-T%d', $this->valueOrDefault('joThreshold'));
+		}
+
+		if ($this->valueOrDefault('joProgressive'))
+			$cmd[] = '--all-progressive';
+
+		$cmd[] = escapeshellarg(is_null($newPath) ? $path : $newPath);
+		
+		exec(implode(' ', $cmd));
 	}
 
+	/**
+	 * There are two scenarios this function covers:
+	 *
+	 * Resizing an original image:
+	 *    $page->image->optimize()->url;
+	 *
+	 * Resizing a manipulated image:
+	 *    $page->image->someManipulations()->optimize()->url;
+	 */
 	public function pageImageOptimize(HookEvent $event)
 	{
 		$image = $event->object; // Pageimage
-
 		$path = $image->filename;
 
-		if ( !($newPath = $this->optimizedFilename($path)))
-			return;
+		// options passed in to optimize()
+		$this->functionCallOptions = $event->arguments && is_array($event->arguments[0])
+			? $event->arguments[0] 
+			: array();
 
-		if ( ! file_exists($newPath))
-			$this->fileOptimize($path, $newPath);
+		// original images should not be overwritten by an optimized version
+		if ($this_is_the_original = is_null($image->original)) {
 
-		$new_image = clone $image;
-		$new_image->setOriginal($image);
-		$new_image->setFilename($newPath);
+			if ( ! ($newPath = $this->optimizedFilename($path)))
+				return;
+			
+			if ( ! file_exists($newPath))
+				$this->fileOptimize($path, $newPath);
 
-		$event->return = $new_image;
+			$return_image = clone $image;
+			$return_image->setOriginal($image);
+			$return_image->setFilename($newPath);
+			
+		} else { // a variation (manipulated)
+
+			$original_mtime = filemtime($image->original->filename);
+
+			// only run optimize if the original file is newer
+			if (filemtime($path) > $original_mtime) {
+				$this->fileOptimize($path);
+				touch($path, $original_mtime);
+			}
+
+			$return_image = $image;
+		}
+
+		$event->return = $return_image;
 	}
 
 	public function optimizedFilename($path)
@@ -100,7 +146,7 @@ class JpegOptimImage extends WireData implements Module, ConfigurableModule
 		if ( ! in_array(strtolower($pathInfo['extension']), array('jpg', 'jpeg')))
 			return false;
 
-		$newPath = sprintf('%s%s%s.jo.%s', 
+		$newPath = sprintf('%s%s%s.0x0.%s',
 			$pathInfo['dirname'], 
 			DIRECTORY_SEPARATOR, 
 			$pathInfo['filename'], 
@@ -116,37 +162,37 @@ class JpegOptimImage extends WireData implements Module, ConfigurableModule
 		$modules = Wire::getFuel('modules');
 
 		$field = $modules->get("InputfieldText");
-		$field->name = "quality";
+		$field->name = "joQuality";
 		$field->label = __("Maximum image quality factor");
-		$field->value = static::dataValueOrDefault('quality', $data);
+		$field->value = static::dataValueOrDefault('joQuality', $data);
 		$field->description = __("Sets  the  maximum  image  quality  factor. This option will reduce quality of those source files that were saved using higher quality setting. While files that already have lower quality setting will be compressed using the lossless optimization method. Valid values for quality parameter are: 0 - 100");
 		$fields->add($field);
 
 		$field = $modules->get("InputfieldText");
-		$field->name = "threshold";
+		$field->name = "joThreshold";
 		$field->label = __("Minimum Compression Threshold");
-		$field->value = static::dataValueOrDefault('threshold', $data);
+		$field->value = static::dataValueOrDefault('joThreshold', $data);
 		$field->description = __("Keep the file unchanged if the compression gain is lower than the threshold (%). Valid values for thresholds are: 0 - 100");
 		$fields->add($field);
 
 		$field = $modules->get("InputfieldText");
-		$field->name = "binary";
+		$field->name = "joBinary";
 		$field->label = __("JpegOptim Binary path");
-		$field->value = static::dataValueOrDefault('binary', $data);
+		$field->value = static::dataValueOrDefault('joBinary', $data);
 		$field->description = __("Path to the jpeg optim location");
 		$fields->add($field);
 
 		$field = $modules->get("InputfieldCheckbox");
-		$field->name = "progressive";
+		$field->name = "joProgressive";
 		$field->label = __("Create progressive images");
-		$field->checked = static::dataValueOrDefault('progressive', $data);
+		$field->checked = static::dataValueOrDefault('joProgressive', $data);
 		$field->description = __("Force all output files to be progressive.");
 		$fields->add($field);
 
 		$field = $modules->get("InputfieldCheckbox");
-		$field->name = "strip";
+		$field->name = "joStrip";
 		$field->label = __("Strip all markers from output file");
-		$field->checked = static::dataValueOrDefault('strip', $data);
+		$field->checked = static::dataValueOrDefault('joStrip', $data);
 		$field->description = __("Output JPEGs will still likely contain one or two markers (JFIF and Adobe APP14) depending on colorspace used in the image, as these markers are generated by the libjpeg encoder automatically.");
 		$fields->add($field);
 
@@ -166,13 +212,16 @@ class JpegOptimImage extends WireData implements Module, ConfigurableModule
 
 	public function valueOrDefault($key)
 	{
-		$value = $this->get($key);
+		$value = null;
 
-		if (is_null($value)) {
-			if (isset(static::$defaults[$key]))
-				return static::$defaults[$key];
-			return $value;
-		}
+		if (isset($this->functionCallOptions[$key]))
+			$value = $this->functionCallOptions[$key];
+
+		if (is_null($value))
+			$value = $this->get($key);
+
+		if (is_null($value) && isset(static::$defaults[$key]))
+			$value = static::$defaults[$key];
 
 		return $value;
 	}
